@@ -1,0 +1,17 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "elastic_hash",
+    hdrs = ["elastic_hash.hpp"],
+)
+
+cc_binary(
+    name = "unordered_map_benchmark",
+    srcs = ["unordered_map_benchmark.cc"],
+    deps = [
+        "@google_benchmark//:benchmark",
+        ":elastic_hash",
+    ],
+)
