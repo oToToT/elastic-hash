@@ -7,6 +7,15 @@ cc_library(
     hdrs = ["elastic_hash.hpp"],
 )
 
+cc_test(
+    name = "elastic_hash_test",
+    srcs = ["elastic_hash_test.cc"],
+    deps = [
+        ":elastic_hash",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "unordered_map_benchmark",
     srcs = ["unordered_map_benchmark.cc"],
