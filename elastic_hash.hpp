@@ -1,5 +1,5 @@
-#ifndef ELATISC_HASH_HPP
-#define ELATISC_HASH_HPP
+#ifndef ELASTIC_HASH_HPP
+#define ELASTIC_HASH_HPP
 
 #include <algorithm>
 #include <bit>
@@ -20,13 +20,19 @@ public:
 
   class iterator {
   public:
+    using iterator_category = std::forward_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = std::pair<const Key, T>;
+    using pointer = value_type *;
+    using reference = value_type &;
+
     iterator(ElasticHashTable *table, size_t index)
         : table_(table), index_(index) {
       advance_to_valid();
     }
 
-    value_type &operator*() { return *table_->data_[index_]; }
-    value_type *operator->() { return &(*table_->data_[index_]); }
+    reference operator*() { return *table_->data_[index_]; }
+    pointer operator->() { return &(*table_->data_[index_]); }
 
     iterator &operator++() {
       ++index_;
@@ -109,10 +115,9 @@ public:
           next_level_load_factor > 1 - kFirstRoundLoadFactor) {
         result = insert_into_level(current_level,
                                    get_probe_limit(current_level_load_factor));
-        if (result.first != end()) {
-          return result;
+        if (result.first == end()) {
+          result = insert_into_level(current_level + 1);
         }
-        result = insert_into_level(current_level + 1);
       } else if (current_level_load_factor <= delta_ / 2) {
         result = insert_into_level(current_level + 1);
       } else {
@@ -139,6 +144,7 @@ public:
 
   iterator find(const Key &key) {
     size_t hash = hash_(key);
+    // inverse_phi(1) and inverse_phi(2) are std::nullopt, so we start from 3.
     for (uint64_t index = 3;; index++) {
       auto position = inverse_phi(index);
       if (!position.has_value()) {
@@ -149,6 +155,9 @@ public:
         continue;
       }
       size_t bucket = get_level_offset(i) + h(i, j, hash);
+      if (data_[bucket].is_deleted()) {
+        continue;
+      }
       if (!data_[bucket].has_value()) {
         break;
       }
@@ -205,13 +214,13 @@ private:
 
   // 1-based level size
   size_t get_level_size(size_t level) const {
-    size_t max_level_size = std::bit_floor(total_bucket_count_);
+    const size_t max_level_size = std::bit_floor(total_bucket_count_);
     return max_level_size >> (level - 1);
   }
 
   size_t get_level_offset(size_t level) const {
-    size_t max_level_size = std::bit_floor(total_bucket_count_);
-    return max_level_size - (max_level_size >> (level - 1));
+    const size_t max_level_size = std::bit_floor(total_bucket_count_);
+    return (max_level_size - (max_level_size >> (level - 1))) * 2;
   }
 
   // According to the analysis in the paper, we need to set C to something at
@@ -220,8 +229,8 @@ private:
   // from emperical experiments.
   size_t get_probe_limit(float level_load_factor) const {
     constexpr size_t C = 200;
-    float v1 = std::log(1 / level_load_factor);
-    float v2 = std::log(1 / delta_);
+    float v1 = -std::log(level_load_factor);
+    float v2 = -std::log(delta_);
     return static_cast<size_t>(C * std::min(v1 * v1, v2));
   }
 
@@ -240,12 +249,46 @@ private:
     return level_size - static_cast<size_t>(level_size * delta_ / 2);
   }
 
+  class Bucket {
+  public:
+    Bucket() : state(State::EMPTY) {};
+    Bucket(const value_type &val) : state(State::OCCUPIED) {
+      new (value) value_type(val);
+    }
+    Bucket(value_type &&val) : state(State::OCCUPIED) {
+      new (value) value_type(std::move(val));
+    }
+    ~Bucket() { reset(); }
+    void reset() {
+      if (state == State::OCCUPIED) {
+        reinterpret_cast<value_type *>(value)->~value_type();
+      }
+      state = State::DELETED;
+    }
+    bool has_value() const { return state == State::OCCUPIED; }
+    bool is_deleted() const { return state == State::DELETED; }
+    value_type &operator*() { return *reinterpret_cast<value_type *>(value); }
+    value_type *operator->() { return reinterpret_cast<value_type *>(value); }
+    void emplace(const value_type &val) {
+      new (value) value_type(val);
+      state = State::OCCUPIED;
+    }
+    void emplace(value_type &&val) {
+      new (value) value_type(std::move(val));
+      state = State::OCCUPIED;
+    }
+
+  private:
+    enum class State : uint8_t { EMPTY, OCCUPIED, DELETED };
+    State state = State::EMPTY;
+    alignas(value_type) std::byte value[sizeof(value_type)];
+  };
+
   size_t total_bucket_count_;
-  size_t size_ = 0;
   float delta_ = 0.25f;
   Hash hash_;
   KeyEqual key_equal_;
-  std::vector<std::optional<value_type>> data_;
+  std::vector<Bucket> data_;
   size_t current_batch_ = 0;
   std::vector<size_t> level_loads;
 
@@ -301,17 +344,16 @@ private:
 
   constexpr uint64_t rapid_hash(uint64_t x, uint64_t y,
                                 uint64_t z) const noexcept {
-
     static constexpr uint64_t secret[8] = {
         0x2d358dccaa6c78a5ull, 0x8bb84b93962eacc9ull, 0x4b33a62ed433d4a3ull,
         0x4d5a2da51de1aa47ull, 0xa0761d6478bd642full, 0xe7037ed1a0b428dbull,
         0x90ed1765281c388cull, 0xaaaaaaaaaaaaaaaaull};
     uint64_t a = y ^ 24 ^ secret[1];
     uint64_t b =
-        z ^ rapid_mix(z ^ secret[2], y ^ rapid_mix(secret[2], secret[1]));
+        z ^ rapid_mix(x ^ secret[2], y ^ rapid_mix(secret[2], secret[1]));
     rapid_mum(&a, &b);
     return rapid_mix(a ^ secret[7], b ^ secret[1] ^ 24);
   }
 };
 
-#endif // ELATISC_HASH_HPP
+#endif // ELASTIC_HASH_HPP
