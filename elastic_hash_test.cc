@@ -59,27 +59,26 @@ TEST(ElasticHashTableTest, Erase) {
 }
 
 TEST(ElasticHashTableTest, EraseIterator) {
-    ElasticHashTable<int, std::string> table;
-    table.insert({1, "one"});
-    table.insert({2, "two"});
+  ElasticHashTable<int, std::string> table;
+  table.insert({1, "one"});
+  table.insert({2, "two"});
 
-    auto it = table.find(1);
-    ASSERT_NE(it, table.end());
+  auto it = table.find(1);
+  ASSERT_NE(it, table.end());
 
-    table.erase(it);
+  table.erase(it);
 
-    auto it_after_erase = table.find(1);
-    EXPECT_EQ(it_after_erase, table.end());
-    
-    int count = 0;
-    for(auto& val : table) {
-        count++;
-        EXPECT_EQ(val.first, 2);
-        EXPECT_EQ(val.second, "two");
-    }
-    EXPECT_EQ(count, 1);
+  auto it_after_erase = table.find(1);
+  EXPECT_EQ(it_after_erase, table.end());
+
+  int count = 0;
+  for (auto &val : table) {
+    count++;
+    EXPECT_EQ(val.first, 2);
+    EXPECT_EQ(val.second, "two");
+  }
+  EXPECT_EQ(count, 1);
 }
-
 
 TEST(ElasticHashTableTest, Iterator) {
   ElasticHashTable<int, std::string> table;
@@ -89,7 +88,7 @@ TEST(ElasticHashTableTest, Iterator) {
 
   int count = 0;
   std::map<int, std::string> expected = {{1, "one"}, {2, "two"}, {3, "three"}};
-  for (const auto& pair : table) {
+  for (const auto &pair : table) {
     EXPECT_EQ(expected.count(pair.first), 1);
     EXPECT_EQ(expected[pair.first], pair.second);
     expected.erase(pair.first);
@@ -100,24 +99,24 @@ TEST(ElasticHashTableTest, Iterator) {
 }
 
 TEST(ElasticHashTableTest, LargeNumberOfInserts) {
-    ElasticHashTable<int, int> table(16);
-    const int num_inserts = 100;
-    for (int i = 0; i < num_inserts; ++i) {
-        auto [it, success] = table.insert({i, i});
-        ASSERT_TRUE(success);
-        ASSERT_NE(it, table.end());
-    }
+  ElasticHashTable<int, int> table;
+  const int num_inserts = 100;
+  for (int i = 0; i < num_inserts; ++i) {
+    auto [it, success] = table.insert({i, i});
+    ASSERT_TRUE(success);
+    ASSERT_NE(it, table.end());
+  }
 
-    for (int i = 0; i < num_inserts; ++i) {
-        auto it = table.find(i);
-        ASSERT_NE(it, table.end());
-        EXPECT_EQ(it->first, i);
-        EXPECT_EQ(it->second, i);
-    }
+  for (int i = 0; i < num_inserts; ++i) {
+    auto it = table.find(i);
+    ASSERT_NE(it, table.end());
+    EXPECT_EQ(it->first, i);
+    EXPECT_EQ(it->second, i);
+  }
 
-    int count = 0;
-    for([[maybe_unused]] auto& val : table) {
-        count++;
-    }
-    EXPECT_EQ(count, num_inserts);
+  int count = 0;
+  for ([[maybe_unused]] auto &val : table) {
+    count++;
+  }
+  EXPECT_EQ(count, num_inserts);
 }
