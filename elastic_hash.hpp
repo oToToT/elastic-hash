@@ -75,8 +75,9 @@ public:
     auto insert_into_level = [&](size_t level,
                                  size_t probe_limit =
                                      -1) -> std::pair<iterator, bool> {
+      size_t level_offset = get_level_offset(level);
       for (size_t j = 0; j < probe_limit; j++) {
-        size_t bucket = h(level, j + 1, hash);
+        size_t bucket = level_offset + h(level, j + 1, hash);
         if (!data_[bucket].has_value()) {
           data_[bucket].emplace(value);
           ++level_loads[level - 1];
@@ -144,7 +145,7 @@ public:
         continue;
       }
       auto [i, j] = position.value();
-      size_t bucket = h(i, j, hash);
+      size_t bucket = get_level_offset(i) + h(i, j, hash);
       if (!data_[bucket].has_value()) {
         break;
       }
@@ -203,6 +204,11 @@ private:
   size_t get_level_size(size_t level) const {
     size_t max_level_size = std::bit_floor(total_bucket_count_);
     return max_level_size >> (level - 1);
+  }
+
+  size_t get_level_offset(size_t level) const {
+    size_t max_level_size = std::bit_floor(total_bucket_count_);
+    return max_level_size - (max_level_size >> (level - 1));
   }
 
   // According to the analysis in the paper, we need to set C to something at
@@ -290,7 +296,8 @@ private:
     return A ^ B;
   }
 
-  constexpr uint64_t rapid_hash(uint64_t x, uint64_t y, uint64_t z) const noexcept {
+  constexpr uint64_t rapid_hash(uint64_t x, uint64_t y,
+                                uint64_t z) const noexcept {
 
     static constexpr uint64_t secret[8] = {
         0x2d358dccaa6c78a5ull, 0x8bb84b93962eacc9ull, 0x4b33a62ed433d4a3ull,
