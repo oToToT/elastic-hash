@@ -58,7 +58,7 @@ public:
     size_t index_;
   };
 
-  ElasticHashTable() : ElasticHashTable(/*bucket_count=*/1 << 20) {}
+  ElasticHashTable() : ElasticHashTable(/*bucket_count=*/1 << 16) {}
   explicit ElasticHashTable(size_t bucket_count)
       : total_bucket_count_(std::bit_floor(bucket_count) * 2 - 1),
         data_(total_bucket_count_),
@@ -145,6 +145,9 @@ public:
         continue;
       }
       auto [i, j] = position.value();
+      if (i >= level_loads.size()) {
+        continue;
+      }
       size_t bucket = get_level_offset(i) + h(i, j, hash);
       if (!data_[bucket].has_value()) {
         break;
