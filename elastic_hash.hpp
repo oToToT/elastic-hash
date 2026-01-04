@@ -13,12 +13,8 @@
 template <typename Key, typename T, typename Hash = std::hash<Key>,
           typename KeyEqual = std::equal_to<Key>>
 class ElasticHashTable {
-public:
-  using value_type = std::pair<const Key, T>;
-  using key_type = Key;
-  using mapped_type = T;
-
-  class iterator {
+private:
+  template <typename HashTable> class iterator_impl {
   public:
     using iterator_category = std::forward_iterator_tag;
     using difference_type = std::ptrdiff_t;
@@ -26,7 +22,7 @@ public:
     using pointer = value_type *;
     using reference = value_type &;
 
-    iterator(ElasticHashTable *table, size_t index)
+    iterator_impl(HashTable *table, size_t index)
         : table_(table), index_(index) {
       advance_to_valid();
     }
@@ -34,22 +30,24 @@ public:
     reference operator*() { return *table_->data_[index_]; }
     pointer operator->() { return &(*table_->data_[index_]); }
 
-    iterator &operator++() {
+    iterator_impl &operator++() {
       ++index_;
       advance_to_valid();
       return *this;
     }
-    iterator operator++(int) {
-      iterator temp = *this;
+    iterator_impl operator++(int) {
+      iterator_impl temp = *this;
       ++(*this);
       return temp;
     }
 
-    bool operator==(const iterator &other) const {
+    bool operator==(const iterator_impl &other) const {
       return table_ == other.table_ && index_ == other.index_;
     }
 
-    bool operator!=(const iterator &other) const { return !(*this == other); }
+    bool operator!=(const iterator_impl &other) const {
+      return !(*this == other);
+    }
 
   private:
     friend class ElasticHashTable;
@@ -60,9 +58,14 @@ public:
         ++index_;
       }
     }
-    ElasticHashTable *table_;
+    HashTable *table_;
     size_t index_;
   };
+
+public:
+  using value_type = std::pair<const Key, T>;
+  using key_type = Key;
+  using mapped_type = T;
 
   ElasticHashTable() : ElasticHashTable(/*bucket_count=*/1 << 16) {}
   explicit ElasticHashTable(size_t bucket_count)
@@ -70,8 +73,15 @@ public:
         data_(total_bucket_count_),
         level_loads(std::bit_width(total_bucket_count_)) {}
 
+  using iterator = iterator_impl<ElasticHashTable>;
+  using const_iterator = iterator_impl<const ElasticHashTable>;
+
   iterator begin() { return iterator(this, 0); }
   iterator end() { return iterator(this, data_.size()); }
+  const_iterator begin() const { return const_iterator(this, 0); }
+  const_iterator end() const { return const_iterator(this, data_.size()); }
+  const_iterator cbegin() const { return begin(); }
+  const_iterator cend() const { return end(); }
   void max_load_factor(float ml) { delta_ = 1 - ml; }
   float max_load_factor() const { return 1 - delta_; }
 
@@ -142,7 +152,11 @@ public:
     return result;
   }
 
-  iterator find(const Key &key) {
+  template <class... Args> std::pair<iterator, bool> insert(Args &&...args) {
+    return insert(value_type(std::forward<Args>(args)...));
+  }
+
+  const_iterator find(const Key &key) const {
     size_t hash = hash_(key);
     // inverse_phi(1) and inverse_phi(2) are std::nullopt, so we start from 3.
     for (uint64_t index = 3;; index++) {
@@ -162,12 +176,39 @@ public:
         break;
       }
       if (key_equal_(data_[bucket]->first, key)) {
-        return iterator(this, bucket);
+        return const_iterator(this, bucket);
       }
     }
 
     return end();
   }
+
+  iterator find(const Key &key) {
+    auto iter = ((const ElasticHashTable *)this)->find(key);
+    return iterator(this, iter.index_);
+  }
+
+  T &operator[](const Key &key) {
+    auto it = find(key);
+    if (it != end()) {
+      return it->second;
+    } else {
+      auto result = insert({key, T()});
+      return result.first->second;
+    }
+  }
+
+  T &operator[](Key &&key) {
+    auto it = find(key);
+    if (it != end()) {
+      return it->second;
+    } else {
+      auto result = insert({std::move(key), T()});
+      return result.first->second;
+    }
+  }
+
+  bool contains(const Key &key) const { return find(key) != end(); }
 
   iterator erase(const Key &key) {
     iterator it = find(key);
@@ -268,7 +309,13 @@ private:
     bool has_value() const { return state == State::OCCUPIED; }
     bool is_deleted() const { return state == State::DELETED; }
     value_type &operator*() { return *reinterpret_cast<value_type *>(value); }
+    const value_type &operator*() const {
+      return *reinterpret_cast<const value_type *>(value);
+    }
     value_type *operator->() { return reinterpret_cast<value_type *>(value); }
+    const value_type *operator->() const {
+      return reinterpret_cast<const value_type *>(value);
+    }
     void emplace(const value_type &val) {
       new (value) value_type(val);
       state = State::OCCUPIED;
