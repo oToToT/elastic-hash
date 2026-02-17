@@ -168,33 +168,100 @@ public:
     return insert(value_type(std::forward<Args>(args)...));
   }
 
+  /*
+   * Energy-based Find Strategy
+   * --------------------------
+   * Instead of following the strict bit-interleaving order of the original \phi
+   * function (which causes erratic memory access patterns), we use an
+   * "Energy-based" traversal sequence.
+   *
+   * We assign an "energy" cost E(i, j) = i * j^2 to the probe at level i,
+   * index j. We then visit probes in increasing order of their energy.
+   *
+   * As proven in proof_of_correctness.md, this ordering maintains the
+   * required property that the rank of probe (i, j) is O(i * j^2).
+   *
+   * This allows us to "batch" probes by level. In each "energy epoch" T,
+   * for each active level i, we perform linear probing for all j such that
+   * i * j^2 <= T. This significantly improves cache locality.
+   */
   const_iterator find(const Key &key) const {
-    size_t num_check_levels = 0;
-    std::vector<bool> checked_levels(level_loads.size(), false);
     size_t hash = hash_(key);
-    // inverse_phi(1) and inverse_phi(2) are std::nullopt, so we start from 3.
-    for (uint64_t index = 3; num_check_levels < checked_levels.size();
-         index++) {
-      auto position = inverse_phi(index);
-      if (!position.has_value()) {
-        continue;
+    size_t num_levels = level_loads.size();
+
+    struct LevelInfo {
+      size_t offset;
+      size_t mask;
+      size_t next_j;
+    };
+    // Max levels is 64 for 64-bit size_t.
+    LevelInfo levels[64];
+
+    for (size_t i = 0; i < num_levels; ++i) {
+      levels[i].offset = get_level_offset(i + 1);
+      // level_size is always a power of 2, so mask is size - 1.
+      levels[i].mask = get_level_size(i + 1) - 1;
+      levels[i].next_j = 1;
+    }
+
+    // Bitmask of active levels (levels that haven't encountered an empty slot).
+    // Assuming num_levels <= 64.
+    uint64_t active_levels_mask =
+        (num_levels == 64) ? ~0ULL : ((1ULL << num_levels) - 1);
+
+    // Iterate through doubling energy epochs energy_budget = 1, 2, 4, 8...
+    // We continue until all levels are exhausted (bitmask becomes 0)
+    // or we find the key.
+    for (size_t energy_budget = 1; active_levels_mask != 0;
+         energy_budget *= 2) {
+      bool progress = false;
+
+      // Iterate over set bits in active_levels_mask
+      uint64_t current_mask = active_levels_mask;
+      while (current_mask != 0) {
+        size_t idx = std::countr_zero(current_mask);
+        // Clear the least significant bit
+        current_mask &= (current_mask - 1);
+
+        size_t level = idx + 1;
+        LevelInfo &info = levels[idx];
+
+        // We want to probe j such that level * j^2 <= energy_budget.
+        // So j^2 <= energy_budget / level.
+        size_t max_j_sq = energy_budget / level;
+        if (max_j_sq == 0)
+          continue;
+
+        // Perform linear probing for this level within the energy budget.
+        // We start from where we left off (next_j).
+        size_t j = info.next_j;
+        while (level * j * j <= energy_budget) {
+          progress = true;
+
+          // Inline h(level, j, hash)
+          size_t h_val = rapid_hash(level, j, hash) & info.mask;
+          size_t bucket = info.offset + h_val;
+
+          if (!data_[bucket].has_value()) {
+            // Found empty slot in this level.
+            // Key cannot exist in this level (due to linear filling in insert).
+            active_levels_mask &= ~(1ULL << idx);
+            break;
+          }
+
+          if (key_equal_(data_[bucket]->first, key)) {
+            return const_iterator(this, bucket);
+          }
+          j++;
+        }
+        info.next_j = j;
       }
-      auto [i, j] = position.value();
-      if (i > level_loads.size()) {
-        continue;
-      }
-      if (checked_levels[i - 1]) {
-        continue;
-      }
-      size_t bucket = get_level_offset(i) + h(i, j, hash);
-      if (!data_[bucket].has_value()) {
-        checked_levels[i - 1] = true;
-        num_check_levels++;
-        continue;
-      }
-      if (key_equal_(data_[bucket]->first, key)) {
-        return const_iterator(this, bucket);
-      }
+
+      // Safety break to prevent infinite loops in case of logic errors,
+      // though mathematically energy_budget will grow large enough to cover all
+      // slots.
+      if (!progress && energy_budget > (1ULL << 60))
+        break;
     }
 
     return end();
@@ -259,31 +326,6 @@ public:
 private:
   size_t h(size_t i, size_t j, uint64_t x) const {
     return rapid_hash(i, j, x) & (get_level_size(i) - 1);
-  }
-
-  // This phi function is a different function from the one in the paper, but it
-  // serves the same purpose. You can use the same proof technique in the paper
-  // to show that this phi function also satisfies phi(i, j) <= O(i * j^2). And
-  // this is a version that is more friendly to the modern computer hardware.
-  static constexpr uint64_t phi(size_t i, size_t j) {
-    const size_t k = std::bit_width(j);
-    const size_t p = k - 1;
-    const size_t high_bit = 1ull << p;
-    const size_t j_rest = j & (high_bit - 1);
-    return (i << (2 * k - 1)) | (j_rest << k) | high_bit;
-  }
-  static constexpr std::optional<std::pair<size_t, size_t>>
-  inverse_phi(uint64_t v) {
-    const size_t p = std::countr_zero(v);
-    const size_t k = p + 1;
-    const size_t temp = v >> k;
-    const size_t j_rest = temp & ((1 << p) - 1);
-    const size_t i = temp >> p;
-    const size_t j = (1 << p) | j_rest;
-    if (i == 0 || j == 0) {
-      return std::nullopt;
-    }
-    return std::make_pair(i, j);
   }
 
   // 1-based level size
