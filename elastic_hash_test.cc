@@ -100,7 +100,7 @@ TEST(ElasticHashTableTest, Iterator) {
 
 TEST(ElasticHashTableTest, LargeNumberOfInserts) {
   ElasticHashTable<int, int> table;
-  const int num_inserts = 100;
+  const int num_inserts = 1 << 20;
   for (int i = 0; i < num_inserts; ++i) {
     auto [it, success] = table.insert({i, i});
     ASSERT_TRUE(success);
@@ -112,6 +112,30 @@ TEST(ElasticHashTableTest, LargeNumberOfInserts) {
     ASSERT_NE(it, table.end());
     EXPECT_EQ(it->first, i);
     EXPECT_EQ(it->second, i);
+  }
+
+  int count = 0;
+  for ([[maybe_unused]] auto &val : table) {
+    count++;
+  }
+  EXPECT_EQ(count, num_inserts);
+}
+
+TEST(ElasticHashTableTest, LargeNumberOfInsertsAndFind) {
+  ElasticHashTable<int, int> table;
+  const int num_inserts = 1 << 20;
+  for (int i = 0; i < num_inserts; ++i) {
+    {
+      auto [it, success] = table.insert({i, i});
+      ASSERT_TRUE(success);
+      ASSERT_NE(it, table.end());
+    }
+    {
+      auto it = table.find(i);
+      ASSERT_NE(it, table.end());
+      EXPECT_EQ(it->first, i);
+      EXPECT_EQ(it->second, i);
+    }
   }
 
   int count = 0;
