@@ -67,9 +67,11 @@ public:
   using key_type = Key;
   using mapped_type = T;
 
-  ElasticHashTable() : ElasticHashTable(/*bucket_count=*/1 << 16) {}
+  ElasticHashTable() : ElasticHashTable(/*bucket_count=*/16) {}
   explicit ElasticHashTable(size_t bucket_count)
-      : total_bucket_count_(std::bit_floor(bucket_count) * 2 - 1),
+      : total_bucket_count_(
+            std::bit_floor(std::max<size_t>(1, bucket_count)) * 2 - 1),
+        delta_(std::max(0.25f, 1.0f / total_bucket_count_)),
         data_(total_bucket_count_),
         level_loads(std::bit_width(total_bucket_count_)) {}
 
@@ -82,10 +84,20 @@ public:
   const_iterator end() const { return const_iterator(this, data_.size()); }
   const_iterator cbegin() const { return begin(); }
   const_iterator cend() const { return end(); }
-  void max_load_factor(float ml) { delta_ = 1 - ml; }
+  void max_load_factor(float ml) {
+    delta_ = std::max(1 - ml, 1.0f / total_bucket_count_);
+  }
   float max_load_factor() const { return 1 - delta_; }
 
   std::pair<iterator, bool> insert(const value_type &value) {
+    return insert(value_type(value));
+  }
+
+  std::pair<iterator, bool> insert(value_type &&value) {
+    if (num_inserts_ >= total_bucket_count_ * max_load_factor()) {
+      rehash(total_bucket_count_ * 2);
+    }
+
     auto hash = hash_(value.first);
 
     auto insert_into_level = [&](size_t level,
@@ -95,8 +107,8 @@ public:
       for (size_t j = 0; j < probe_limit; j++) {
         size_t bucket = level_offset + h(level, j + 1, hash);
         if (!data_[bucket].has_value()) {
-          data_[bucket].emplace(value);
-          ++level_loads[level - 1];
+          data_[bucket].emplace(std::move(value));
+          level_loads[level - 1]++, num_inserts_++;
           return {iterator(this, bucket), true};
         } else if (key_equal_(data_[bucket]->first, value.first)) {
           return {iterator(this, bucket), false};
@@ -115,11 +127,11 @@ public:
       size_t current_level_size = get_level_size(current_level);
       size_t next_level_size = current_level_size / 2;
       float current_level_load_factor =
-          static_cast<float>(level_loads[current_level - 1]) /
-          static_cast<float>(current_level_size);
+          1 - static_cast<float>(level_loads[current_level - 1]) /
+                  static_cast<float>(current_level_size);
       float next_level_load_factor =
-          static_cast<float>(level_loads[current_level]) /
-          static_cast<float>(next_level_size);
+          1 - static_cast<float>(level_loads[current_level]) /
+                  static_cast<float>(next_level_size);
 
       if (current_level_load_factor > delta_ / 2 &&
           next_level_load_factor > 1 - kFirstRoundLoadFactor) {
@@ -157,23 +169,28 @@ public:
   }
 
   const_iterator find(const Key &key) const {
+    size_t num_check_levels = 0;
+    std::vector<bool> checked_levels(level_loads.size(), false);
     size_t hash = hash_(key);
     // inverse_phi(1) and inverse_phi(2) are std::nullopt, so we start from 3.
-    for (uint64_t index = 3;; index++) {
+    for (uint64_t index = 3; num_check_levels < checked_levels.size();
+         index++) {
       auto position = inverse_phi(index);
       if (!position.has_value()) {
         continue;
       }
       auto [i, j] = position.value();
-      if (i >= level_loads.size()) {
+      if (i > level_loads.size()) {
+        continue;
+      }
+      if (checked_levels[i - 1]) {
         continue;
       }
       size_t bucket = get_level_offset(i) + h(i, j, hash);
-      if (data_[bucket].is_deleted()) {
-        continue;
-      }
       if (!data_[bucket].has_value()) {
-        break;
+        checked_levels[i - 1] = true;
+        num_check_levels++;
+        continue;
       }
       if (key_equal_(data_[bucket]->first, key)) {
         return const_iterator(this, bucket);
@@ -221,6 +238,22 @@ public:
     auto current_pos = pos++;
     data_[current_pos.index_].reset();
     return pos;
+  }
+
+  void rehash(size_t new_bucket_count) {
+    ElasticHashTable new_table(new_bucket_count);
+    for (auto &bucket : data_) {
+      if (bucket.has_value()) {
+        new_table.insert(*bucket);
+      }
+    }
+    *this = std::move(new_table);
+  }
+  void reserve(size_t new_bucket_count) {
+    if (new_bucket_count > total_bucket_count_ * max_load_factor()) {
+      rehash(
+          static_cast<size_t>(std::ceil(new_bucket_count / max_load_factor())));
+    }
   }
 
 private:
@@ -290,53 +323,12 @@ private:
     return level_size - static_cast<size_t>(level_size * delta_ / 2);
   }
 
-  class Bucket {
-  public:
-    Bucket() : state(State::EMPTY) {};
-    Bucket(const value_type &val) : state(State::OCCUPIED) {
-      new (value) value_type(val);
-    }
-    Bucket(value_type &&val) : state(State::OCCUPIED) {
-      new (value) value_type(std::move(val));
-    }
-    ~Bucket() { reset(); }
-    void reset() {
-      if (state == State::OCCUPIED) {
-        reinterpret_cast<value_type *>(value)->~value_type();
-      }
-      state = State::DELETED;
-    }
-    bool has_value() const { return state == State::OCCUPIED; }
-    bool is_deleted() const { return state == State::DELETED; }
-    value_type &operator*() { return *reinterpret_cast<value_type *>(value); }
-    const value_type &operator*() const {
-      return *reinterpret_cast<const value_type *>(value);
-    }
-    value_type *operator->() { return reinterpret_cast<value_type *>(value); }
-    const value_type *operator->() const {
-      return reinterpret_cast<const value_type *>(value);
-    }
-    void emplace(const value_type &val) {
-      new (value) value_type(val);
-      state = State::OCCUPIED;
-    }
-    void emplace(value_type &&val) {
-      new (value) value_type(std::move(val));
-      state = State::OCCUPIED;
-    }
-
-  private:
-    enum class State : uint8_t { EMPTY, OCCUPIED, DELETED };
-    State state = State::EMPTY;
-    alignas(value_type) std::byte value[sizeof(value_type)];
-  };
-
   size_t total_bucket_count_;
-  float delta_ = 0.25f;
+  float delta_;
   Hash hash_;
   KeyEqual key_equal_;
-  std::vector<Bucket> data_;
-  size_t current_batch_ = 0;
+  std::vector<std::optional<value_type>> data_;
+  size_t current_batch_ = 0, num_inserts_ = 0;
   std::vector<size_t> level_loads;
 
   /*
