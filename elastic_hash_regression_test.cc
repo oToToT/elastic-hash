@@ -87,7 +87,37 @@ template <class Hash> void differential(float load, int operations) {
   }
 }
 
+void scheduler_regressions() {
+  // Check the C++ allowance against the formally counted recurrence.
+  std::size_t work[13] = {1, 3};
+  for (unsigned epoch = 0; epoch < 13; ++epoch) {
+    if (epoch >= 2)
+      work[epoch] = 2 * work[epoch - 2] + 3 * (std::size_t{1} << (epoch - 1));
+    std::size_t actual = 0;
+    for (unsigned i = 1; i < (1u << (epoch + 1)); ++i)
+      actual += elastic_hash_detail::epoch_probe_limit(
+          epoch, i, std::numeric_limits<std::size_t>::max());
+    CHECK(actual == work[epoch]);
+    CHECK(actual <= 4 * (std::size_t{1} << epoch));
+  }
+  // Every pair is emitted once, in increasing j at its level, within the bound.
+  std::size_t next[64] = {}, rank = 0;
+  for (unsigned epoch = 0; epoch < 20; ++epoch) {
+    for (unsigned i = 1; i <= 64; ++i) {
+      const auto limit = elastic_hash_detail::epoch_probe_limit(epoch, i, 64);
+      while (next[i - 1] < limit) {
+        const auto j = ++next[i - 1];
+        ++rank;
+        CHECK(rank <= 16 * i * j * j);
+      }
+    }
+  }
+  CHECK(rank == 64 * 64);
+  CHECK(elastic_hash_detail::epoch_probe_limit(200, 64, 123) == 123);
+}
+
 int main() {
+  scheduler_regressions();
   Table table;
   for (int i = 0; i < 20; ++i)
     table.insert({i, i});
