@@ -7,6 +7,9 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <cstddef>
+#include <iterator>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -14,53 +17,51 @@ template <typename Key, typename T, typename Hash = std::hash<Key>,
           typename KeyEqual = std::equal_to<Key>>
 class ElasticHashTable {
 private:
-  template <typename HashTable> class iterator_impl {
-  public:
-    using iterator_category = std::forward_iterator_tag;
-    using difference_type = std::ptrdiff_t;
-    using value_type = std::pair<const Key, T>;
-    using pointer = value_type *;
-    using reference = value_type &;
-
-    iterator_impl(HashTable *table, size_t index)
+  template <bool Const> class iterator_impl {
+    using table_type =
+        std::conditional_t<Const, const ElasticHashTable, ElasticHashTable>;
+    friend class ElasticHashTable;
+    template <bool> friend class iterator_impl;
+    table_type *table_ = nullptr;
+    std::size_t index_ = 0;
+    iterator_impl(table_type *table, std::size_t index)
         : table_(table), index_(index) {
-      advance_to_valid();
+      while (index_ < table_->data_.size() && !table_->data_[index_])
+        ++index_;
     }
 
-    reference operator*() { return *table_->data_[index_]; }
-    pointer operator->() { return &(*table_->data_[index_]); }
-
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using iterator_concept = std::forward_iterator_tag;
+    using difference_type = std::ptrdiff_t;
+    using value_type = std::pair<const Key, T>;
+    using pointer = std::conditional_t<Const, const value_type *, value_type *>;
+    using reference =
+        std::conditional_t<Const, const value_type &, value_type &>;
+    iterator_impl() = default;
+    template <bool Other>
+      requires(Const && !Other)
+    iterator_impl(const iterator_impl<Other> &other)
+        : table_(other.table_), index_(other.index_) {}
+    reference operator*() const { return *table_->data_[index_]; }
+    pointer operator->() const { return &*table_->data_[index_]; }
     iterator_impl &operator++() {
-      ++index_;
-      advance_to_valid();
+      do {
+        ++index_;
+      } while (index_ < table_->data_.size() && !table_->data_[index_]);
       return *this;
     }
     iterator_impl operator++(int) {
-      iterator_impl temp = *this;
-      ++(*this);
-      return temp;
+      auto old = *this;
+      ++*this;
+      return old;
     }
-
-    bool operator==(const iterator_impl &other) const {
+    template <bool Other>
+    bool operator==(const iterator_impl<Other> &other) const {
       return table_ == other.table_ && index_ == other.index_;
     }
-
-    bool operator!=(const iterator_impl &other) const {
-      return !(*this == other);
-    }
-
-  private:
-    friend class ElasticHashTable;
-
-    void advance_to_valid() {
-      while (index_ < table_->data_.size() &&
-             !table_->data_[index_].has_value()) {
-        ++index_;
-      }
-    }
-    HashTable *table_;
-    size_t index_;
   };
+
 
 public:
   using value_type = std::pair<const Key, T>;
@@ -75,8 +76,8 @@ public:
         data_(total_bucket_count_),
         level_loads(std::bit_width(total_bucket_count_)) {}
 
-  using iterator = iterator_impl<ElasticHashTable>;
-  using const_iterator = iterator_impl<const ElasticHashTable>;
+  using iterator = iterator_impl<false>;
+  using const_iterator = iterator_impl<true>;
 
   iterator begin() { return iterator(this, 0); }
   iterator end() { return iterator(this, data_.size()); }
