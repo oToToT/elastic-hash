@@ -1,0 +1,38 @@
+{
+  "reference_buckets": 1048575,
+  "loads": [
+    "0.95",
+    "0.99"
+  ],
+  "order_seed": 31019,
+  "sampling": "preallocated, native library capacity rules; actual occupancy recorded",
+  "command": [
+    "benchmarks/run_occupancy.py",
+    "/tmp/elastic-comparison-build/hash_comparison",
+    "--output",
+    "benchmarks/results/2026-10-26-high-occupancy-large",
+    "--buckets",
+    "1048575",
+    "--loads",
+    "0.95",
+    "0.99",
+    "--key-types",
+    "u64",
+    "--samples",
+    "5",
+    "--target-ms",
+    "20"
+  ],
+  "runs": [
+    {
+      "load": "0.99",
+      "entries": 1038089,
+      "directory": "load-0p99"
+    },
+    {
+      "load": "0.95",
+      "entries": 996146,
+      "directory": "load-0p95"
+    }
+  ]
+}

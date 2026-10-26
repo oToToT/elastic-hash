@@ -1,0 +1,6 @@
+map,key_type,hash,size,operation,samples,buckets,load_factor,median_ns_per_op,p25_ns_per_op,p75_ns_per_op,min_ns_per_op,max_ns_per_op,heap_bytes_per_entry,target_load,configured_max_load,time_relative_to_std
+elastic,string,native,196607,hit,5,262143,0.7499990463,394.1264197,381.5491819,401.5738656,381.4505028,420.1225389,,0.75,0.75,
+elastic,string,native,196607,insert_reserved,5,262143,0.7499990463,433.1444608,410.8005717,433.9414466,410.0078329,434.9814656,,0.75,0.75,
+elastic,string,native,196607,memory,1,262143,0.7499990463,,,,,,114.6824681,0.75,0.75,
+elastic,string,native,196607,miss,5,262143,0.7499990463,47.38089946,46.17157578,47.71537127,45.17694182,52.88140046,,0.75,0.75,
+elastic,string,native,196607,mixed,5,262143,0.7499990463,253.5509621,253.530683,258.1571663,251.5471652,259.4068828,,0.75,0.75,

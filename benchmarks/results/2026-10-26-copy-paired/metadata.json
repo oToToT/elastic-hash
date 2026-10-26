@@ -1,0 +1,31 @@
+{
+  "command": [
+    "benchmarks/experiments/compare_copy.py",
+    "/tmp/elastic-comparison-build/hash_comparison",
+    "/tmp/elastic-comparison-build/hash_comparison_candidate",
+    "--baseline-header",
+    "/tmp/elastic-before-copy-optimization/elastic_hash.hpp",
+    "--output",
+    "benchmarks/results/2026-10-26-copy-paired",
+    "--pairs",
+    "5",
+    "--samples",
+    "5"
+  ],
+  "cpu": 0,
+  "pairs": 5,
+  "samples": 5,
+  "reference_buckets": 262143,
+  "load": "0.75",
+  "entries": 196607,
+  "binary_sha256": {
+    "optimized": "75eacab0d33c0a7a8d0c281f7ecf4d4c0b631a0bd135cf2b866d3c24918a5337",
+    "baseline": "888b01867256d87d372f28ad96f40ac152085a7097e063cf2214f1c2c91ac0c1"
+  },
+  "header_sha256": {
+    "optimized": "8026295afda6266d80d3ada45ad5dbb96998d5fab4c7de43e7e10a691c9db9e2",
+    "baseline": "0d6123797f4f52da5dff887d14494192fc03c121f592837ef5696fd0c25e7e40"
+  },
+  "median_paired_ratio": 0.8697112090710895,
+  "median_paired_time_reduction_percent": 13.028879092891055
+}

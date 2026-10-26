@@ -1,0 +1,83 @@
+{
+  "started_utc": "2026-10-26T05:36:26.183759+00:00",
+  "cpu": 0,
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8352V CPU @ 2.10GHz",
+  "platform": "Linux-6.18.54-gentoo-dist-bin-x86_64-Intel-R-_Xeon-R-_Platinum_8352V_CPU_@_2.10GHz-with-glibc2.43",
+  "libc": [
+    "glibc",
+    "2.43"
+  ],
+  "python": "3.14.7",
+  "binary_info": "compiler: Clang 22.1.8\nlibstdc++: 20260612\n",
+  "binary_sha256": "888b01867256d87d372f28ad96f40ac152085a7097e063cf2214f1c2c91ac0c1",
+  "elastic_header_sha256": "0d6123797f4f52da5dff887d14494192fc03c121f592837ef5696fd0c25e7e40",
+  "harness_sha256": "4ca90c419ae1d4f46d962d869149fc0e0d2541cb2f9b1a96097040135e40ef31",
+  "git_commit": "75a09affa9a43ba4e4cdd7dd8fd8f7fa54c39e17",
+  "elastic_header_path": "/tmp/elastic-before-copy-optimization/elastic_hash.hpp",
+  "operations": [
+    "insert_reserved",
+    "hit",
+    "miss",
+    "mixed"
+  ],
+  "target_load": 0.75,
+  "reference_buckets": 262143,
+  "samples": 5,
+  "target_ms": 20.0,
+  "sizes": [
+    196607
+  ],
+  "maps": [
+    "elastic"
+  ],
+  "key_types": [
+    "string"
+  ],
+  "hash_modes": [
+    "native"
+  ],
+  "dataset_seed": "0x519b6f32d4817a09",
+  "process_order_seed": 31019,
+  "dependency_versions": {
+    "abseil": "20260817.0",
+    "unordered_dense": "4.8.1"
+  },
+  "command": [
+    "/home/ototot/tmp/elastic-hash/benchmarks/run.py",
+    "/tmp/elastic-comparison-build/hash_comparison_candidate",
+    "--output",
+    "benchmarks/results/2026-10-26-high-occupancy-before-copy/load-0p75",
+    "--sizes",
+    "196607",
+    "--samples",
+    "5",
+    "--target-ms",
+    "20.0",
+    "--cpu",
+    "0",
+    "--target-load",
+    "0.75",
+    "--reference-buckets",
+    "262143",
+    "--maps",
+    "elastic",
+    "--key-types",
+    "string",
+    "--hash-modes",
+    "native",
+    "--operations",
+    "insert_reserved",
+    "hit",
+    "miss",
+    "mixed",
+    "--elastic-header",
+    "/tmp/elastic-before-copy-optimization/elastic_hash.hpp"
+  ],
+  "cmake_flags": [
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "CMAKE_CXX_COMPILER:UNINITIALIZED=clang++",
+    "CMAKE_CXX_FLAGS:STRING=",
+    "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG"
+  ],
+  "finished_utc": "2026-10-26T05:36:28.641069+00:00"
+}
