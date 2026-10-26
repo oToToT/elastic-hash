@@ -1,0 +1,66 @@
+{
+  "started_utc": "2026-10-26T04:29:01.122980+00:00",
+  "cpu": 0,
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8352V CPU @ 2.10GHz",
+  "platform": "Linux-6.18.54-gentoo-dist-bin-x86_64-Intel-R-_Xeon-R-_Platinum_8352V_CPU_@_2.10GHz-with-glibc2.43",
+  "libc": [
+    "glibc",
+    "2.43"
+  ],
+  "python": "3.14.7",
+  "binary_info": "compiler: Clang 22.1.8\nlibstdc++: 20260612\n",
+  "binary_sha256": "4790609e02969e7f50363b096acf5a73fe209b4d632bd9bc0ffea665cc13c534",
+  "elastic_header_sha256": "0d6123797f4f52da5dff887d14494192fc03c121f592837ef5696fd0c25e7e40",
+  "harness_sha256": "3fa2bc45d56f5bcca5bd6515a7c99a2c3afa02609d644397b02d2f5c374f4a7a",
+  "git_commit": "75a09affa9a43ba4e4cdd7dd8fd8f7fa54c39e17",
+  "samples": 7,
+  "target_ms": 10.0,
+  "sizes": [
+    4096,
+    45000,
+    180000
+  ],
+  "maps": [
+    "std",
+    "absl",
+    "dense",
+    "gnu_gp",
+    "gnu_cc",
+    "elastic"
+  ],
+  "key_types": [
+    "u64",
+    "string"
+  ],
+  "hash_modes": [
+    "native",
+    "shared"
+  ],
+  "dataset_seed": "0x519b6f32d4817a09",
+  "process_order_seed": 31019,
+  "dependency_versions": {
+    "abseil": "20260817.0",
+    "unordered_dense": "4.8.1"
+  },
+  "command": [
+    "benchmarks/run.py",
+    "/tmp/elastic-comparison-build/hash_comparison",
+    "--output",
+    "benchmarks/results/2026-10-26-clang22",
+    "--sizes",
+    "4096",
+    "45000",
+    "180000",
+    "--samples",
+    "7",
+    "--target-ms",
+    "10"
+  ],
+  "cmake_flags": [
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "CMAKE_CXX_COMPILER:STRING=/usr/lib/llvm/22/bin/clang++",
+    "CMAKE_CXX_FLAGS:STRING=",
+    "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG"
+  ],
+  "finished_utc": "2026-10-26T04:33:58.265280+00:00"
+}
