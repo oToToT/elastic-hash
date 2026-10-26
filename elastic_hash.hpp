@@ -109,6 +109,7 @@ public:
     for (std::size_t capacity = (data_.size() + 1) / 2, offset = 0; capacity;
          offset += capacity, capacity /= 2)
       levels_.push_back({offset, capacity});
+    set_load(0.75f);
   }
   ElasticHashTable(const ElasticHashTable &) = default;
   ElasticHashTable &operator=(const ElasticHashTable &other) {
@@ -144,6 +145,8 @@ public:
     swap(batch_, other.batch_);
     swap(load_factor_, other.load_factor_);
     swap(active_levels_, other.active_levels_);
+    swap(max_size_, other.max_size_);
+    swap(delta_, other.delta_);
   }
 
   iterator begin() { return iterator(this, 0); }
@@ -262,13 +265,15 @@ private:
       throw std::length_error("elastic hash capacity overflow");
     return std::max(elements + 1, static_cast<std::size_t>(needed));
   }
-  std::size_t capacity_limit() const {
-    return std::min(data_.size() - 1, static_cast<std::size_t>(
-        static_cast<long double>(data_.size()) * load_factor_));
+  void set_load(float load) {
+    load_factor_ = load;
+    max_size_ = std::min(data_.size() - 1,
+                         static_cast<std::size_t>(
+                             static_cast<long double>(data_.size()) * load));
+    delta_ = std::max(1.0 - load, 1.0 / data_.size());
   }
-  double delta() const {
-    return std::max(1.0 - load_factor_, 1.0 / data_.size());
-  }
+  std::size_t capacity_limit() const { return max_size_; }
+  double delta() const { return delta_; }
   static std::uint8_t tag_for(std::size_t hash) {
     // Mix before taking a fingerprint: identity integer hashes have zero high
     // bits.
@@ -320,10 +325,25 @@ private:
     // Dyadic energy epochs. Level i (1-based) has band floor(log2(i));
     // epoch r visits j <= 2^floor((r-band)/2). Each pair is visited once.
     // verification/Scheduler.lean proves the corresponding rank <= 16*i*j^2.
+    // Most successful searches finish at the first probe; avoid allocating and
+    // initializing the scheduler state on that path.
+    if (active & 1) {
+      const auto bucket = probe_bucket(0, 1, hash);
+      const auto stored_tag = tags_[bucket];
+      if (stored_tag == tag && key_equal_(data_[bucket]->first, key))
+        return bucket;
+      if (stored_tag == 0 || levels_[0].max_probe == 1)
+        active &= ~std::uint64_t{1};
+      if (!active)
+        return npos;
+    }
     if (!maybe_present(hash))
       return npos;
-    std::size_t next[word_bits] = {};
-    for (unsigned epoch = 0; active; ++epoch) {
+    std::size_t next[word_bits];
+    for (auto mask = active; mask; mask &= mask - 1)
+      next[std::countr_zero(mask)] = 0;
+    next[0] = 1; // Epoch zero contains just the first probe at level one.
+    for (unsigned epoch = 1; active; ++epoch) {
       auto mask = active;
       while (mask) {
         const unsigned i = std::countr_zero(mask);
@@ -432,7 +452,7 @@ private:
   }
   void rebuild(std::size_t count, float load) {
     ElasticHashTable replacement(count, hash_, key_equal_);
-    replacement.load_factor_ = load;
+    replacement.set_load(load);
     for (auto &bucket : data_) {
       if (!bucket)
         continue;
@@ -456,6 +476,8 @@ private:
   std::vector<Level> levels_;
   std::size_t size_ = 0, used_ = 0, batch_ = 0;
   float load_factor_ = 0.75f;
+  std::size_t max_size_ = 0;
+  double delta_ = 0.25;
   std::uint64_t active_levels_ = 0;
 
   /*
