@@ -1,9 +1,11 @@
 #include "elastic_hash.hpp"
 
+#include <cmath>
 #include <concepts>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -152,6 +154,43 @@ void copy_and_aliasing_regressions() {
         placed.first->second == "mapped value used across growth");
 }
 
+template <class Hash> void high_occupancy_regressions(std::size_t capacity) {
+  for (float load : {0.75f, 0.9f, 0.95f, 0.99f, 0.999f}) {
+    ElasticHashTable<int, int, Hash> table(capacity);
+    table.max_load_factor(load);
+    const auto buckets = table.bucket_count();
+    const auto count =
+        static_cast<int>(std::floor(static_cast<double>(buckets) * load));
+    std::vector<int> keys(count);
+    std::iota(keys.begin(), keys.end(), 0);
+    std::mt19937 random(741);
+    std::shuffle(keys.begin(), keys.end(), random);
+    for (int key : keys)
+      CHECK(table.insert({key, key + 1}).second);
+    CHECK(table.size() == keys.size() && table.bucket_count() == buckets);
+    for (int key : keys) {
+      auto found = table.find(key);
+      CHECK(found != table.end() && found->second == key + 1);
+      CHECK(!table.insert({key, -1}).second);
+    }
+    CHECK(table.bucket_count() == buckets);
+    for (int key = count; key < count + 20; ++key)
+      CHECK(!table.contains(key));
+    for (int i = 0; i < count; i += 3)
+      table.erase(keys[i]);
+    for (int i = 0; i < count; ++i)
+      CHECK(table.contains(keys[i]) == (i % 3 != 0));
+    int added = 0;
+    for (int i = 0; i < count; i += 3) {
+      CHECK(table.insert({count + added, count + added + 1}).second);
+      ++added;
+    }
+    CHECK(table.size() == keys.size() && table.bucket_count() == buckets);
+    for (int key = count; key < count + added; ++key)
+      CHECK(table.find(key)->second == key + 1);
+  }
+}
+
 void scheduler_regressions() {
   // Check the C++ allowance against the formally counted recurrence.
   std::size_t work[13] = {1, 3};
@@ -184,6 +223,8 @@ void scheduler_regressions() {
 int main() {
   scheduler_regressions();
   copy_and_aliasing_regressions();
+  high_occupancy_regressions<std::hash<int>>(4095);
+  high_occupancy_regressions<ConstantHash>(511);
   Table table;
   for (int i = 0; i < 20; ++i)
     table.insert({i, i});
