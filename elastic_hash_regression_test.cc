@@ -1,0 +1,197 @@
+#include "elastic_hash.hpp"
+
+#include <concepts>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <random>
+#include <string>
+#include <unordered_map>
+
+#define CHECK(condition)                                                       \
+  do {                                                                         \
+    if (!(condition)) {                                                        \
+      std::cerr << __FILE__ << ':' << __LINE__ << ": " #condition "\n";        \
+      std::abort();                                                            \
+    }                                                                          \
+  } while (false)
+
+struct ConstantHash {
+  std::size_t operator()(int) const { return 0; }
+};
+struct SaltedHash {
+  std::size_t salt;
+  std::size_t operator()(int key) const { return std::hash<int>{}(key) ^ salt; }
+};
+using Table = ElasticHashTable<int, int>;
+static_assert(std::forward_iterator<Table::iterator>);
+static_assert(std::forward_iterator<Table::const_iterator>);
+static_assert(std::is_same_v<decltype(*std::declval<const Table &>().begin()),
+                             const Table::value_type &>);
+
+template <class Hash> void differential(float load, int operations) {
+  ElasticHashTable<int, int, Hash> table(1);
+  table.max_load_factor(load);
+  std::unordered_map<int, int, Hash> expected;
+  std::mt19937 rng(31019);
+  for (int step = 0; step < operations; ++step) {
+    const int key = rng() % 200, value = rng() % 100000;
+    switch (rng() % 8) {
+    case 0:
+    case 1: {
+      auto a = table.insert({key, value});
+      auto b = expected.insert({key, value});
+      CHECK(a.second == b.second);
+      CHECK(a.first->first == b.first->first &&
+            a.first->second == b.first->second);
+      break;
+    }
+    case 2:
+      table.erase(key);
+      expected.erase(key);
+      break;
+    case 3:
+      table[key] = value;
+      expected[key] = value;
+      break;
+    case 4:
+      CHECK(table.contains(key) == expected.contains(key));
+      break;
+    case 5:
+      table.reserve(rng() % 400);
+      break;
+    case 6:
+      table.rehash(rng() % 400);
+      break;
+    case 7:
+      if (step % 97 == 0) {
+        table.clear();
+        expected.clear();
+      }
+      break;
+    }
+    CHECK(table.size() == expected.size());
+    CHECK(table.max_load_factor() == load);
+    if (step % 31 == 0) {
+      std::unordered_map<int, int> actual;
+      const auto &view = table;
+      for (const auto &[k, v] : view)
+        CHECK(actual.emplace(k, v).second);
+      CHECK(actual.size() == expected.size());
+      for (const auto &[k, v] : expected) {
+        auto it = view.find(k);
+        CHECK(it != view.end() && it->second == v);
+        CHECK(actual.at(k) == v);
+      }
+    }
+  }
+}
+
+int main() {
+  Table table;
+  for (int i = 0; i < 20; ++i)
+    table.insert({i, i});
+  auto duplicate = table.insert({0, 100});
+  CHECK(!duplicate.second && duplicate.first->second == 0 &&
+        table.size() == 20);
+  for (int i = 0; i < 20; ++i)
+    CHECK(!table.insert({i, -1}).second);
+  CHECK(table.size() == 20);
+
+  ElasticHashTable<int, int, ConstantHash> collisions(2);
+  collisions.insert({1, 1});
+  collisions.insert({2, 2});
+  CHECK(
+      !collisions.contains(3)); // Previously an infinite loop in a full level.
+  collisions.erase(1);
+  CHECK(collisions.contains(2));
+  collisions.insert({3, 3});
+  CHECK(collisions.contains(2) && collisions.contains(3));
+
+  table.max_load_factor(0.5f);
+  table.reserve(100);
+  CHECK(table.max_load_factor() == 0.5f);
+  auto buckets = table.bucket_count();
+  for (int i = 20; i < 100; ++i)
+    table.insert({i, i});
+  CHECK(table.bucket_count() == buckets);
+  table.max_load_factor(0.95f);
+  for (int i = 0; i < 100; ++i)
+    CHECK(table.contains(i));
+  const Table &view = table;
+  CHECK(view.find(1)->second == 1);
+  CHECK(table.begin() == view.begin());
+  CHECK(view.begin() == table.begin());
+  auto expected_next = table.begin();
+  ++expected_next;
+  CHECK(table.erase(table.begin()->first) == expected_next);
+  CHECK(table.erase(-999) == table.end());
+  auto copy = table;
+  Table assigned;
+  assigned = copy;
+  Table moved(std::move(copy));
+  copy.insert({999, 999}); // A moved-from table remains usable.
+  CHECK(copy.contains(999));
+  CHECK(moved.size() == assigned.size());
+  for (auto it = moved.begin(); it != moved.end();)
+    it = moved.erase(it);
+  CHECK(moved.empty());
+  moved.insert({42, 43});
+  CHECK(moved[42] == 43);
+
+  ElasticHashTable<int, int, SaltedHash> salted(4, SaltedHash{12345});
+  for (int i = 0; i < 1000; ++i)
+    salted.insert({i, i});
+  salted.rehash(4000);
+  for (int i = 0; i < 1000; ++i)
+    CHECK(salted.find(i)->second == i);
+
+  ElasticHashTable<int, std::unique_ptr<int>> pointers;
+  for (int i = 0; i < 100; ++i)
+    pointers.try_emplace(i, std::make_unique<int>(i));
+  pointers.reserve(1000);
+  for (int i = 0; i < 100; ++i)
+    CHECK(*pointers.find(i)->second == i);
+  auto retained = std::make_unique<int>(5);
+  CHECK(!pointers.try_emplace(0, std::move(retained)).second);
+  CHECK(retained && *retained == 5);
+
+  for (float invalid :
+       {0.0f, -1.0f, 1.1f, std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN()}) {
+    bool threw = false;
+    try {
+      table.max_load_factor(invalid);
+    } catch (const std::invalid_argument &) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+  bool threw = false;
+  try {
+    table.reserve(std::numeric_limits<std::size_t>::max());
+  } catch (const std::length_error &) {
+    threw = true;
+  }
+  CHECK(threw);
+
+  for (float load : {0.01f, 0.25f, 0.5f, 0.75f, 0.9f, 0.99f, 1.0f}) {
+    differential<std::hash<int>>(load, 6000);
+    differential<ConstantHash>(load, 2000);
+  }
+  // Exercise every small batch boundary at high occupancy and after deletions.
+  for (int capacity : {1, 2, 3, 4, 7, 8, 15, 16, 31, 64, 127, 256}) {
+    ElasticHashTable<int, int, ConstantHash> t(capacity);
+    t.max_load_factor(1.0f);
+    for (int i = 0; i < 300; ++i)
+      t.insert({i, i});
+    for (int i = 0; i < 300; ++i)
+      CHECK(t.contains(i));
+    CHECK(!t.contains(301));
+    for (int i = 0; i < 300; i += 2)
+      t.erase(i);
+    for (int i = 1; i < 300; i += 2)
+      CHECK(t.contains(i));
+  }
+  std::cout << "All elastic hash regressions passed\n";
+}

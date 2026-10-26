@@ -24,3 +24,9 @@ cc_binary(
         ":elastic_hash",
     ],
 )
+cc_test(
+    name = "elastic_hash_regression_test",
+    srcs = ["elastic_hash_regression_test.cc"],
+    deps = [":elastic_hash"],
+    timeout = "short",
+)

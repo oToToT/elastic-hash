@@ -4,19 +4,39 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <optional>
-#include <cstddef>
 #include <iterator>
+#include <limits>
+#include <optional>
+#include <stdexcept>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+namespace elastic_hash_detail {
+// The same dyadic allowance modeled in verification/Scheduler.lean.
+constexpr std::size_t epoch_probe_limit(unsigned epoch, unsigned level,
+                                        std::size_t max_probe) {
+  const unsigned band = std::bit_width(level) - 1;
+  if (band > epoch)
+    return 0;
+  const unsigned exponent = (epoch - band) / 2;
+  constexpr auto bits = std::numeric_limits<std::size_t>::digits;
+  return exponent >= bits ? max_probe
+                          : std::min(max_probe, std::size_t{1} << exponent);
+}
+} // namespace elastic_hash_detail
+
+// A growing map using the paper's elastic insertion batches. The paper's
+// probabilistic bounds assume independent random probes and insertion-only
+// operation; the deterministic mixer, fallback, deletion and growth here are
+// engineering extensions. See verification/README.md for the proved scope.
 template <typename Key, typename T, typename Hash = std::hash<Key>,
           typename KeyEqual = std::equal_to<Key>>
 class ElasticHashTable {
-private:
   template <bool Const> class iterator_impl {
     using table_type =
         std::conditional_t<Const, const ElasticHashTable, ElasticHashTable>;
@@ -62,22 +82,67 @@ private:
     }
   };
 
+  struct Level {
+    std::size_t offset, capacity;
+    std::size_t used =
+        0; // Live slots plus tombstones; monotone until a rebuild.
+    std::size_t live = 0;
+    std::size_t max_probe = 0; // Largest 1-based probe used by any insertion.
+  };
+  static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
+  static constexpr unsigned word_bits =
+      std::numeric_limits<std::size_t>::digits;
 
 public:
   using value_type = std::pair<const Key, T>;
   using key_type = Key;
   using mapped_type = T;
-
-  ElasticHashTable() : ElasticHashTable(/*bucket_count=*/16) {}
-  explicit ElasticHashTable(size_t bucket_count)
-      : total_bucket_count_(
-            std::bit_floor(std::max<size_t>(1, bucket_count)) * 2 - 1),
-        delta_(std::max(0.25f, 1.0f / total_bucket_count_)),
-        data_(total_bucket_count_),
-        level_loads(std::bit_width(total_bucket_count_)) {}
-
   using iterator = iterator_impl<false>;
   using const_iterator = iterator_impl<true>;
+
+  ElasticHashTable() : ElasticHashTable(16) {}
+  explicit ElasticHashTable(std::size_t bucket_count, const Hash &hash = Hash{},
+                            const KeyEqual &equal = KeyEqual{})
+      : hash_(hash), key_equal_(equal), data_(rounded_capacity(bucket_count)),
+        tags_(data_.size(), 0) {
+    for (std::size_t capacity = (data_.size() + 1) / 2, offset = 0; capacity;
+         offset += capacity, capacity /= 2)
+      levels_.push_back({offset, capacity});
+  }
+  ElasticHashTable(const ElasticHashTable &) = default;
+  ElasticHashTable &operator=(const ElasticHashTable &other) {
+    if (this != &other) {
+      ElasticHashTable copy(other);
+      swap(copy);
+    }
+    return *this;
+  }
+  ElasticHashTable(ElasticHashTable &&other)
+      : ElasticHashTable(1, other.hash_, other.key_equal_) {
+    swap(other);
+  }
+  ElasticHashTable &operator=(ElasticHashTable &&other) {
+    if (this != &other) {
+      ElasticHashTable moved(std::move(other));
+      swap(moved);
+    }
+    return *this;
+  }
+  void swap(ElasticHashTable &other) noexcept(
+      std::is_nothrow_swappable_v<Hash> &&
+      std::is_nothrow_swappable_v<KeyEqual>) {
+    using std::swap;
+    swap(hash_, other.hash_);
+    swap(key_equal_, other.key_equal_);
+    swap(data_, other.data_);
+    swap(tags_, other.tags_);
+    swap(levels_, other.levels_);
+    swap(size_, other.size_);
+    swap(used_, other.used_);
+    swap(batch_, other.batch_);
+    swap(load_factor_, other.load_factor_);
+    swap(active_levels_, other.active_levels_);
+  }
 
   iterator begin() { return iterator(this, 0); }
   iterator end() { return iterator(this, data_.size()); }
@@ -85,294 +150,279 @@ public:
   const_iterator end() const { return const_iterator(this, data_.size()); }
   const_iterator cbegin() const { return begin(); }
   const_iterator cend() const { return end(); }
-  void max_load_factor(float ml) {
-    delta_ = std::max(1 - ml, 1.0f / total_bucket_count_);
+  std::size_t size() const { return size_; }
+  bool empty() const { return size_ == 0; }
+  std::size_t bucket_count() const { return data_.size(); }
+  float load_factor() const { return static_cast<float>(size_) / data_.size(); }
+  float max_load_factor() const { return load_factor_; }
+  void max_load_factor(float value) {
+    if (!std::isfinite(value) || value <= 0 || value > 1)
+      throw std::invalid_argument("max_load_factor must be in (0, 1]");
+    if (value == load_factor_)
+      return;
+    // Batch targets depend on delta: changing it requires rebuilding the
+    // batches.
+    rebuild(std::max(data_.size(), buckets_for(size_, value)), value);
   }
-  float max_load_factor() const { return 1 - delta_; }
 
   std::pair<iterator, bool> insert(const value_type &value) {
     return insert(value_type(value));
   }
-
   std::pair<iterator, bool> insert(value_type &&value) {
-    if (num_inserts_ >= total_bucket_count_ * max_load_factor()) {
-      rehash(total_bucket_count_ * 2);
-    }
-
-    auto hash = hash_(value.first);
-
-    auto insert_into_level = [&](size_t level,
-                                 size_t probe_limit =
-                                     -1) -> std::pair<iterator, bool> {
-      size_t level_offset = get_level_offset(level);
-      for (size_t j = 0; j < probe_limit; j++) {
-        size_t bucket = level_offset + h(level, j + 1, hash);
-        if (!data_[bucket].has_value()) {
-          data_[bucket].emplace(std::move(value));
-          level_loads[level - 1]++, num_inserts_++;
-          return {iterator(this, bucket), true};
-        } else if (key_equal_(data_[bucket]->first, value.first)) {
-          return {iterator(this, bucket), false};
-        }
-      }
-      return {end(), false};
-    };
-
-    std::pair<iterator, bool> result = {end(), false};
-
-    // Special case for the first batch.
-    if (current_batch_ == 0) {
-      result = insert_into_level(1);
-    } else {
-      size_t current_level = current_batch_;
-      size_t current_level_size = get_level_size(current_level);
-      size_t next_level_size = current_level_size / 2;
-      float current_level_load_factor =
-          1 - static_cast<float>(level_loads[current_level - 1]) /
-                  static_cast<float>(current_level_size);
-      float next_level_load_factor =
-          1 - static_cast<float>(level_loads[current_level]) /
-                  static_cast<float>(next_level_size);
-
-      if (current_level_load_factor > delta_ / 2 &&
-          next_level_load_factor > 1 - kFirstRoundLoadFactor) {
-        result = insert_into_level(current_level,
-                                   get_probe_limit(current_level_load_factor));
-        if (result.first == end()) {
-          result = insert_into_level(current_level + 1);
-        }
-      } else if (current_level_load_factor <= delta_ / 2) {
-        result = insert_into_level(current_level + 1);
-      } else {
-        result = insert_into_level(current_level);
-      }
-    }
-
-    // Check if we need to advance to the next batch.
-    if (current_batch_ == 0) {
-      if (level_loads[0] == get_first_round_max_capacity(1)) {
-        current_batch_ = 1;
-      }
-    } else {
-      if (level_loads[current_batch_ - 1] ==
-              get_final_max_capacity(current_batch_) &&
-          level_loads[current_batch_] ==
-              get_first_round_max_capacity(current_batch_ + 1)) {
-        current_batch_++;
-      }
-    }
-
-    return result;
+    const auto hash = hash_(value.first);
+    const auto found = find_index(value.first, hash);
+    if (found != npos)
+      return {iterator(this, found), false};
+    // Stage before a possible rebuild, including when value aliases this table.
+    value_type staged(std::move(value));
+    prepare_insert();
+    return {iterator(this, insert_absent(std::move(staged), hash)), true};
   }
-
   template <class... Args> std::pair<iterator, bool> insert(Args &&...args) {
     return insert(value_type(std::forward<Args>(args)...));
   }
-
-  /*
-   * Energy-based Find Strategy
-   * --------------------------
-   * Instead of following the strict bit-interleaving order of the original \phi
-   * function (which causes erratic memory access patterns), we use an
-   * "Energy-based" traversal sequence.
-   *
-   * We assign an "energy" cost E(i, j) = i * j^2 to the probe at level i,
-   * index j. We then visit probes in increasing order of their energy.
-   *
-   * As proven in proof_of_correctness.md, this ordering maintains the
-   * required property that the rank of probe (i, j) is O(i * j^2).
-   *
-   * This allows us to "batch" probes by level. In each "energy epoch" T,
-   * for each active level i, we perform linear probing for all j such that
-   * i * j^2 <= T. This significantly improves cache locality.
-   */
+  template <class... Args>
+  std::pair<iterator, bool> try_emplace(const Key &key, Args &&...args) {
+    return emplace_key(key, std::forward<Args>(args)...);
+  }
+  template <class... Args>
+  std::pair<iterator, bool> try_emplace(Key &&key, Args &&...args) {
+    return emplace_key(std::move(key), std::forward<Args>(args)...);
+  }
+  T &operator[](const Key &key) { return try_emplace(key).first->second; }
+  T &operator[](Key &&key) { return try_emplace(std::move(key)).first->second; }
   const_iterator find(const Key &key) const {
-    size_t hash = hash_(key);
-    size_t num_levels = level_loads.size();
-
-    struct LevelInfo {
-      size_t offset;
-      size_t mask;
-      size_t next_j;
-    };
-    // Max levels is 64 for 64-bit size_t.
-    LevelInfo levels[64];
-
-    for (size_t i = 0; i < num_levels; ++i) {
-      levels[i].offset = get_level_offset(i + 1);
-      // level_size is always a power of 2, so mask is size - 1.
-      levels[i].mask = get_level_size(i + 1) - 1;
-      levels[i].next_j = 1;
-    }
-
-    // Bitmask of active levels (levels that haven't encountered an empty slot).
-    // Assuming num_levels <= 64.
-    uint64_t active_levels_mask =
-        (num_levels == 64) ? ~0ULL : ((1ULL << num_levels) - 1);
-
-    // Iterate through doubling energy epochs energy_budget = 1, 2, 4, 8...
-    // We continue until all levels are exhausted (bitmask becomes 0)
-    // or we find the key.
-    for (size_t energy_budget = 1; active_levels_mask != 0;
-         energy_budget *= 2) {
-      bool progress = false;
-
-      // Iterate over set bits in active_levels_mask
-      uint64_t current_mask = active_levels_mask;
-      while (current_mask != 0) {
-        size_t idx = std::countr_zero(current_mask);
-        // Clear the least significant bit
-        current_mask &= (current_mask - 1);
-
-        size_t level = idx + 1;
-        LevelInfo &info = levels[idx];
-
-        // We want to probe j such that level * j^2 <= energy_budget.
-        // So j^2 <= energy_budget / level.
-        size_t max_j_sq = energy_budget / level;
-        if (max_j_sq == 0)
-          continue;
-
-        // Perform linear probing for this level within the energy budget.
-        // We start from where we left off (next_j).
-        size_t j = info.next_j;
-        while (level * j * j <= energy_budget) {
-          progress = true;
-
-          // Inline h(level, j, hash)
-          size_t h_val = rapid_hash(level, j, hash) & info.mask;
-          size_t bucket = info.offset + h_val;
-
-          if (!data_[bucket].has_value()) {
-            // Found empty slot in this level.
-            // Key cannot exist in this level (due to linear filling in insert).
-            active_levels_mask &= ~(1ULL << idx);
-            break;
-          }
-
-          if (key_equal_(data_[bucket]->first, key)) {
-            return const_iterator(this, bucket);
-          }
-          j++;
-        }
-        info.next_j = j;
-      }
-
-      // Safety break to prevent infinite loops in case of logic errors,
-      // though mathematically energy_budget will grow large enough to cover all
-      // slots.
-      if (!progress && energy_budget > (1ULL << 60))
-        break;
-    }
-
-    return end();
+    const auto index = find_index(key, hash_(key));
+    return const_iterator(this, index == npos ? data_.size() : index);
   }
-
   iterator find(const Key &key) {
-    auto iter = ((const ElasticHashTable *)this)->find(key);
-    return iterator(this, iter.index_);
+    const auto index = find_index(key, hash_(key));
+    return iterator(this, index == npos ? data_.size() : index);
+  }
+  bool contains(const Key &key) const {
+    return find_index(key, hash_(key)) != npos;
   }
 
-  T &operator[](const Key &key) {
-    auto it = find(key);
-    if (it != end()) {
-      return it->second;
-    } else {
-      auto result = insert({key, T()});
-      return result.first->second;
-    }
-  }
-
-  T &operator[](Key &&key) {
-    auto it = find(key);
-    if (it != end()) {
-      return it->second;
-    } else {
-      auto result = insert({std::move(key), T()});
-      return result.first->second;
-    }
-  }
-
-  bool contains(const Key &key) const { return find(key) != end(); }
-
+  // Both erase overloads return the next physical iterator (end if absent).
   iterator erase(const Key &key) {
-    iterator it = find(key);
-    if (it != end()) {
-      erase(it);
-    }
-    return it;
+    auto it = find(key);
+    return it == end() ? it : erase(it);
   }
   iterator erase(iterator pos) {
-    auto current_pos = pos++;
-    data_[current_pos.index_].reset();
-    return pos;
-  }
-
-  void rehash(size_t new_bucket_count) {
-    ElasticHashTable new_table(new_bucket_count);
-    for (auto &bucket : data_) {
-      if (bucket.has_value()) {
-        new_table.insert(*bucket);
+    auto next = pos;
+    ++next;
+    const auto index = pos.index_;
+    data_[index].reset();
+    tags_[index] = 1; // A tombstone must not terminate a search.
+    --size_;
+    for (std::size_t i = 0; i < levels_.size(); ++i) {
+      auto &level = levels_[i];
+      if (index < level.offset + level.capacity) {
+        if (--level.live == 0)
+          active_levels_ &= ~(std::uint64_t{1} << i);
+        break;
       }
     }
-    *this = std::move(new_table);
+    return next;
   }
-  void reserve(size_t new_bucket_count) {
-    if (new_bucket_count > total_bucket_count_ * max_load_factor()) {
-      rehash(
-          static_cast<size_t>(std::ceil(new_bucket_count / max_load_factor())));
-    }
+  void clear() {
+    for (auto &value : data_)
+      value.reset();
+    std::fill(tags_.begin(), tags_.end(), 0);
+    for (auto &level : levels_)
+      level.used = level.live = level.max_probe = 0;
+    size_ = used_ = batch_ = 0;
+    active_levels_ = 0;
+  }
+  void reserve(std::size_t count) {
+    if (count > capacity_limit())
+      rehash(buckets_for(count, load_factor_));
+  }
+  void rehash(std::size_t count) {
+    rebuild(std::max(count, buckets_for(size_, load_factor_)), load_factor_);
   }
 
 private:
-  size_t h(size_t i, size_t j, uint64_t x) const {
-    return rapid_hash(i, j, x) & (get_level_size(i) - 1);
+  static std::size_t rounded_capacity(std::size_t requested) {
+    // At least three slots, and leave room for offsets and the bounded
+    // fallback.
+    constexpr auto limit = std::size_t{1} << (word_bits - 2);
+    if (requested >= limit)
+      throw std::length_error("elastic hash capacity overflow");
+    return std::bit_ceil(std::max<std::size_t>(requested + 1, 4)) - 1;
+  }
+  static std::size_t buckets_for(std::size_t elements, float load) {
+    const long double needed =
+        std::ceil(static_cast<long double>(elements) / load);
+    constexpr auto limit = std::size_t{1} << (word_bits - 2);
+    if (needed >= limit || elements >= limit - 1)
+      throw std::length_error("elastic hash capacity overflow");
+    return std::max(elements + 1, static_cast<std::size_t>(needed));
+  }
+  std::size_t capacity_limit() const {
+    return std::min(data_.size() - 1, static_cast<std::size_t>(
+        static_cast<long double>(data_.size()) * load_factor_));
+  }
+  double delta() const {
+    return std::max(1.0 - load_factor_, 1.0 / data_.size());
+  }
+  static std::size_t first_target(const Level &level) {
+    return level.capacity - level.capacity / 4;
+  }
+  std::size_t final_target(const Level &level) const {
+    return level.capacity -
+           static_cast<std::size_t>(level.capacity * delta() / 2);
+  }
+  std::size_t probe_bucket(std::size_t i, std::size_t j,
+                           std::size_t hash) const {
+    const auto &level = levels_[i];
+    // Keep the paper-style random prefix. A full linear cycle after that prefix
+    // guarantees termination even for a pathological deterministic hash stream.
+    const auto position = j <= level.capacity ? rapid_hash(i + 1, j, hash)
+                                              : hash + (j - level.capacity - 1);
+    return level.offset + (position & (level.capacity - 1));
   }
 
-  // 1-based level size
-  size_t get_level_size(size_t level) const {
-    const size_t max_level_size = std::bit_floor(total_bucket_count_);
-    return max_level_size >> (level - 1);
+  std::size_t find_index(const Key &key, std::size_t hash) const {
+    auto active = active_levels_;
+    if (!active)
+      return npos;
+    // Dyadic energy epochs. Level i (1-based) has band floor(log2(i));
+    // epoch r visits j <= 2^floor((r-band)/2). Each pair is visited once.
+    // verification/Scheduler.lean proves the corresponding rank <= 16*i*j^2.
+    std::size_t next[word_bits] = {};
+    for (unsigned epoch = 0; active; ++epoch) {
+      auto mask = active;
+      while (mask) {
+        const unsigned i = std::countr_zero(mask);
+        const unsigned band = std::bit_width(i + 1) - 1;
+        if (band > epoch)
+          break;
+        mask &= mask - 1;
+        const auto &level = levels_[i];
+        const auto limit = elastic_hash_detail::epoch_probe_limit(
+            epoch, i + 1, level.max_probe);
+        auto j = next[i];
+        while (j < limit) {
+          const auto bucket = probe_bucket(i, ++j, hash);
+          const auto stored_tag = tags_[bucket];
+          if (stored_tag == 0) {
+            active &= ~(std::uint64_t{1} << i);
+            break;
+          }
+          if (stored_tag >= 2 && key_equal_(data_[bucket]->first, key))
+            return bucket;
+        }
+        next[i] = j;
+        if (j == level.max_probe)
+          active &= ~(std::uint64_t{1} << i);
+      }
+    }
+    return npos;
+  }
+  template <class K, class... Args>
+  std::pair<iterator, bool> emplace_key(K &&key, Args &&...args) {
+    const auto hash = hash_(key);
+    const auto found = find_index(key, hash);
+    if (found != npos)
+      return {iterator(this, found), false};
+    value_type value(std::piecewise_construct,
+                     std::forward_as_tuple(std::forward<K>(key)),
+                     std::forward_as_tuple(std::forward<Args>(args)...));
+    prepare_insert();
+    return {iterator(this, insert_absent(std::move(value), hash)), true};
+  }
+  void prepare_insert() {
+    // Reclaim tombstones without growing; historical occupancy determines
+    // batches.
+    if (used_ != size_ &&
+        (used_ - size_ > data_.size() / 8 || used_ >= capacity_limit()))
+      rehash(data_.size());
+    if (size_ >= capacity_limit()) {
+      rehash(std::max(data_.size() + 1, buckets_for(size_ + 1, load_factor_)));
+    }
+  }
+  std::size_t insert_absent(value_type &&value, std::size_t hash) {
+    auto into = [&](std::size_t i, std::size_t limit = npos) {
+      auto &level = levels_[i];
+      limit = std::min(limit, 2 * level.capacity);
+      for (std::size_t j = 1; j <= limit; ++j) {
+        const auto bucket = probe_bucket(i, j, hash);
+        if (tags_[bucket] >= 2)
+          continue;
+        data_[bucket].emplace(std::move(value));
+        if (tags_[bucket] == 0) {
+          ++level.used;
+          ++used_;
+        }
+        tags_[bucket] = 2;
+        ++level.live;
+        ++size_;
+        level.max_probe = std::max(level.max_probe, j);
+        active_levels_ |= std::uint64_t{1} << i;
+        return bucket;
+      }
+      return npos;
+    };
+    std::size_t result;
+    if (batch_ == 0) {
+      result = into(0);
+      if (levels_[0].used >= first_target(levels_[0]))
+        batch_ = 1;
+    } else {
+      const auto i = batch_ - 1;
+      auto &current = levels_[i];
+      auto &next = levels_[i + 1];
+      const bool current_done = current.used >= final_target(current);
+      const bool next_done = next.used >= first_target(next);
+      if (current_done)
+        result = into(i + 1);
+      else if (next_done)
+        result = into(i);
+      else {
+        const double epsilon =
+            1.0 - static_cast<double>(current.used) / current.capacity;
+        const double log_epsilon = -std::log(epsilon);
+        const auto limit = static_cast<std::size_t>(
+            200 * std::min(log_epsilon * log_epsilon, -std::log(delta())));
+        result = into(i, limit);
+        if (result == npos)
+          result = into(i + 1);
+      }
+      if (current.used >= final_target(current) &&
+          next.used >= first_target(next))
+        ++batch_;
+    }
+    if (result == npos)
+      throw std::logic_error("elastic hash batch has no free slot");
+    return result;
+  }
+  void rebuild(std::size_t count, float load) {
+    ElasticHashTable replacement(count, hash_, key_equal_);
+    replacement.load_factor_ = load;
+    for (auto &bucket : data_) {
+      if (!bucket)
+        continue;
+      const auto hash = replacement.hash_(bucket->first);
+      if constexpr (std::is_copy_constructible_v<value_type>) {
+        value_type value(*bucket);
+        replacement.insert_absent(std::move(value), hash);
+      } else {
+        replacement.insert_absent(std::move(*bucket), hash);
+      }
+    }
+    swap(replacement);
   }
 
-  size_t get_level_offset(size_t level) const {
-    const size_t max_level_size = std::bit_floor(total_bucket_count_);
-    return (max_level_size - (max_level_size >> (level - 1))) * 2;
-  }
-
-  // According to the analysis in the paper, we need to set C to something at
-  // least 100(\pi^2/6-1 + 1). These could be even larger due to some hidden
-  // constants behiind the big-O notation. Setting C to 200 should be good
-  // from emperical experiments.
-  size_t get_probe_limit(float level_load_factor) const {
-    constexpr size_t C = 200;
-    float v1 = -std::log(level_load_factor);
-    float v2 = -std::log(delta_);
-    return static_cast<size_t>(C * std::min(v1 * v1, v2));
-  }
-
-  // We set the max capacity of the first round to be 0.75 of the level size.
-  // According the analysis in the paper, any value larger than 0.54 and smaller
-  // than 1 should work. We choose 0.75 here from empirical experiments.
-  float kFirstRoundLoadFactor = 0.75f;
-  size_t get_first_round_max_capacity(size_t level) const {
-    size_t level_size = get_level_size(level);
-    // Calculate the ceiling of level_size * 0.75.
-    return (level_size * 3 + 3) / 4;
-  }
-
-  size_t get_final_max_capacity(size_t level) const {
-    size_t level_size = get_level_size(level);
-    return level_size - static_cast<size_t>(level_size * delta_ / 2);
-  }
-
-  size_t total_bucket_count_;
-  float delta_;
   Hash hash_;
   KeyEqual key_equal_;
   std::vector<std::optional<value_type>> data_;
-  size_t current_batch_ = 0, num_inserts_ = 0;
-  std::vector<size_t> level_loads;
+  // 0 = never occupied, 1 = tombstone, 2 = live entry.
+  std::vector<std::uint8_t> tags_;
+  std::vector<Level> levels_;
+  std::size_t size_ = 0, used_ = 0, batch_ = 0;
+  float load_factor_ = 0.75f;
+  std::uint64_t active_levels_ = 0;
 
   /*
    * rapidhash V3 - Very fast, high quality, platform-independent hashing
