@@ -85,7 +85,10 @@ reached, the active mask becomes zero; energy overflow cannot cause a loop.
 `std::unordered_map`, loads from 0.01 to 1.0, constant hashes, small/full levels,
 duplicate keys across batches, deletion/reinsertion, const and mixed iterators,
 copy/move operations, move-only values, stateful hashes, reserve guarantees,
-invalid settings, and capacity overflow.
+invalid settings, and capacity overflow. It also exercises actual 75–99.9%
+fills, copy-count ceilings, aliased insertion arguments, and rollback after a
+partially populated replacement throws. The key-copy optimization changes no
+probe or batch decisions, so the scheduler proof models the same sequence.
 
 For AddressSanitizer and UndefinedBehaviorSanitizer:
 
@@ -103,3 +106,7 @@ checks remain enabled.
 lookups observable. It measures fresh-table insertion (including growth), hits,
 and misses with integer keys. The existing Google Benchmark target covers more
 types and operations. See `BENCHMARKS.md` for measured results and commands.
+
+The [cross-container studies](../benchmarks/README.md) cover ordinary loads,
+million-entry working sets, and high occupancy. Their timing results and heap
+estimates are empirical measurements and do not extend the formal proof scope.
