@@ -1,0 +1,81 @@
+{
+  "started_utc": "2026-10-26T04:44:10.359596+00:00",
+  "cpu": 0,
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8352V CPU @ 2.10GHz",
+  "platform": "Linux-6.18.54-gentoo-dist-bin-x86_64-Intel-R-_Xeon-R-_Platinum_8352V_CPU_@_2.10GHz-with-glibc2.43",
+  "libc": [
+    "glibc",
+    "2.43"
+  ],
+  "python": "3.14.7",
+  "binary_info": "compiler: Clang 22.1.8\nlibstdc++: 20260612\n",
+  "binary_sha256": "f16cc79aafd7e1bbcfea5494ae1f58ace43463fd95259f6b9bd8169b64c2f887",
+  "elastic_header_sha256": "0d6123797f4f52da5dff887d14494192fc03c121f592837ef5696fd0c25e7e40",
+  "harness_sha256": "07dd9737a6196dabfaee12f99efca73895b284356115830a7e1e5dac6b9bc4cd",
+  "git_commit": "75a09affa9a43ba4e4cdd7dd8fd8f7fa54c39e17",
+  "elastic_header_path": "/home/ototot/tmp/elastic-hash/elastic_hash.hpp",
+  "operations": [
+    "insert_grow",
+    "hit",
+    "miss",
+    "mixed"
+  ],
+  "samples": 5,
+  "target_ms": 20.0,
+  "sizes": [
+    1000000,
+    3000000
+  ],
+  "maps": [
+    "std",
+    "absl",
+    "dense",
+    "elastic"
+  ],
+  "key_types": [
+    "u64"
+  ],
+  "hash_modes": [
+    "native"
+  ],
+  "dataset_seed": "0x519b6f32d4817a09",
+  "process_order_seed": 31019,
+  "dependency_versions": {
+    "abseil": "20260817.0",
+    "unordered_dense": "4.8.1"
+  },
+  "command": [
+    "benchmarks/run.py",
+    "/tmp/elastic-comparison-build/hash_comparison",
+    "--output",
+    "benchmarks/results/2026-10-26-large-u64",
+    "--sizes",
+    "1000000",
+    "3000000",
+    "--samples",
+    "5",
+    "--target-ms",
+    "20",
+    "--maps",
+    "std",
+    "absl",
+    "dense",
+    "elastic",
+    "--key-types",
+    "u64",
+    "--hash-modes",
+    "native",
+    "--operations",
+    "insert_grow",
+    "hit",
+    "miss",
+    "mixed"
+  ],
+  "cmake_flags": [
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "CMAKE_CXX_COMPILER:UNINITIALIZED=clang++",
+    "CMAKE_CXX_FLAGS:STRING=",
+    "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG"
+  ],
+  "finished_utc": "2026-10-26T04:47:43.703715+00:00"
+}

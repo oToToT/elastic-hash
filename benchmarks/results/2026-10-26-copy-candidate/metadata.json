@@ -1,0 +1,77 @@
+{
+  "started_utc": "2026-10-26T04:49:53.768600+00:00",
+  "cpu": 0,
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8352V CPU @ 2.10GHz",
+  "platform": "Linux-6.18.54-gentoo-dist-bin-x86_64-Intel-R-_Xeon-R-_Platinum_8352V_CPU_@_2.10GHz-with-glibc2.43",
+  "libc": [
+    "glibc",
+    "2.43"
+  ],
+  "python": "3.14.7",
+  "binary_info": "compiler: Clang 22.1.8\nlibstdc++: 20260612\n",
+  "binary_sha256": "3ba84eb8690624795c35252bb894450487739c08404b614ef25611b8a31410ee",
+  "elastic_header_sha256": "8026295afda6266d80d3ada45ad5dbb96998d5fab4c7de43e7e10a691c9db9e2",
+  "harness_sha256": "07dd9737a6196dabfaee12f99efca73895b284356115830a7e1e5dac6b9bc4cd",
+  "git_commit": "75a09affa9a43ba4e4cdd7dd8fd8f7fa54c39e17",
+  "elastic_header_path": "/tmp/elastic-copy-candidate/elastic_hash.hpp",
+  "operations": [
+    "insert_grow",
+    "insert_reserved",
+    "hit",
+    "miss"
+  ],
+  "samples": 5,
+  "target_ms": 20.0,
+  "sizes": [
+    45000,
+    1000000
+  ],
+  "maps": [
+    "elastic"
+  ],
+  "key_types": [
+    "string"
+  ],
+  "hash_modes": [
+    "native"
+  ],
+  "dataset_seed": "0x519b6f32d4817a09",
+  "process_order_seed": 31019,
+  "dependency_versions": {
+    "abseil": "20260817.0",
+    "unordered_dense": "4.8.1"
+  },
+  "command": [
+    "benchmarks/run.py",
+    "/tmp/elastic-comparison-build/hash_comparison_candidate",
+    "--elastic-header",
+    "/tmp/elastic-copy-candidate/elastic_hash.hpp",
+    "--output",
+    "benchmarks/results/2026-10-26-copy-candidate",
+    "--sizes",
+    "45000",
+    "1000000",
+    "--samples",
+    "5",
+    "--target-ms",
+    "20",
+    "--maps",
+    "elastic",
+    "--key-types",
+    "string",
+    "--hash-modes",
+    "native",
+    "--operations",
+    "insert_grow",
+    "insert_reserved",
+    "hit",
+    "miss"
+  ],
+  "cmake_flags": [
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "CMAKE_CXX_COMPILER:UNINITIALIZED=clang++",
+    "CMAKE_CXX_FLAGS:STRING=",
+    "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG"
+  ],
+  "finished_utc": "2026-10-26T04:50:46.629862+00:00"
+}
