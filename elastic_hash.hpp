@@ -104,7 +104,8 @@ public:
   explicit ElasticHashTable(std::size_t bucket_count, const Hash &hash = Hash{},
                             const KeyEqual &equal = KeyEqual{})
       : hash_(hash), key_equal_(equal), data_(rounded_capacity(bucket_count)),
-        tags_(data_.size(), 0) {
+        tags_(data_.size(), 0),
+        filter_(std::max<std::size_t>(1, (data_.size() + 1) / 8), 0) {
     for (std::size_t capacity = (data_.size() + 1) / 2, offset = 0; capacity;
          offset += capacity, capacity /= 2)
       levels_.push_back({offset, capacity});
@@ -137,6 +138,7 @@ public:
     swap(data_, other.data_);
     swap(tags_, other.tags_);
     swap(levels_, other.levels_);
+    swap(filter_, other.filter_);
     swap(size_, other.size_);
     swap(used_, other.used_);
     swap(batch_, other.batch_);
@@ -229,6 +231,7 @@ public:
     for (auto &value : data_)
       value.reset();
     std::fill(tags_.begin(), tags_.end(), 0);
+    std::fill(filter_.begin(), filter_.end(), 0);
     for (auto &level : levels_)
       level.used = level.live = level.max_probe = 0;
     size_ = used_ = batch_ = 0;
@@ -266,6 +269,11 @@ private:
   double delta() const {
     return std::max(1.0 - load_factor_, 1.0 / data_.size());
   }
+  static std::uint8_t tag_for(std::size_t hash) {
+    // Mix before taking a fingerprint: identity integer hashes have zero high
+    // bits.
+    return static_cast<std::uint8_t>(2 + ((hash ^ (hash >> 16)) % 254));
+  }
   static std::size_t first_target(const Level &level) {
     return level.capacity - level.capacity / 4;
   }
@@ -283,13 +291,37 @@ private:
     return level.offset + (position & (level.capacity - 1));
   }
 
+  // Conservative two-bit membership filter. Erase never clears bits; rebuild
+  // reconstructs it. Thus it can reject an absent key before scheduling more
+  // probes, but cannot reject a live key. It uses about one byte per bucket.
+  std::uint64_t filter_hash(std::size_t hash) const {
+    return rapid_mix(hash ^ 0x2d358dccaa6c78a5ULL, 0x8bb84b93962eacc9ULL);
+  }
+  bool maybe_present(std::size_t hash) const {
+    auto bits = filter_hash(hash);
+    for (int i = 0; i < 2; ++i, bits = std::rotr(bits, 32)) {
+      if (!(filter_[(bits >> 6) & (filter_.size() - 1)] &
+            (std::uint64_t{1} << (bits & 63))))
+        return false;
+    }
+    return true;
+  }
+  void remember_hash(std::size_t hash) {
+    auto bits = filter_hash(hash);
+    for (int i = 0; i < 2; ++i, bits = std::rotr(bits, 32))
+      filter_[(bits >> 6) & (filter_.size() - 1)] |= std::uint64_t{1}
+                                                     << (bits & 63);
+  }
   std::size_t find_index(const Key &key, std::size_t hash) const {
     auto active = active_levels_;
     if (!active)
       return npos;
+    const auto tag = tag_for(hash);
     // Dyadic energy epochs. Level i (1-based) has band floor(log2(i));
     // epoch r visits j <= 2^floor((r-band)/2). Each pair is visited once.
     // verification/Scheduler.lean proves the corresponding rank <= 16*i*j^2.
+    if (!maybe_present(hash))
+      return npos;
     std::size_t next[word_bits] = {};
     for (unsigned epoch = 0; active; ++epoch) {
       auto mask = active;
@@ -310,7 +342,7 @@ private:
             active &= ~(std::uint64_t{1} << i);
             break;
           }
-          if (stored_tag >= 2 && key_equal_(data_[bucket]->first, key))
+          if (stored_tag == tag && key_equal_(data_[bucket]->first, key))
             return bucket;
         }
         next[i] = j;
@@ -355,7 +387,8 @@ private:
           ++level.used;
           ++used_;
         }
-        tags_[bucket] = 2;
+        tags_[bucket] = tag_for(hash);
+        remember_hash(hash);
         ++level.live;
         ++size_;
         level.max_probe = std::max(level.max_probe, j);
@@ -417,8 +450,9 @@ private:
   Hash hash_;
   KeyEqual key_equal_;
   std::vector<std::optional<value_type>> data_;
-  // 0 = never occupied, 1 = tombstone, 2 = live entry.
+  // 0 = never occupied, 1 = tombstone, 2..255 = live hash fingerprint.
   std::vector<std::uint8_t> tags_;
+  std::vector<std::uint64_t> filter_;
   std::vector<Level> levels_;
   std::size_t size_ = 0, used_ = 0, batch_ = 0;
   float load_factor_ = 0.75f;
