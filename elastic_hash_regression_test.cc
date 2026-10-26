@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
@@ -87,6 +88,70 @@ template <class Hash> void differential(float load, int operations) {
   }
 }
 
+struct CopyCheckedKey {
+  std::string text;
+  inline static int copies = 0;
+  inline static int budget = -1;
+  explicit CopyCheckedKey(std::string value) : text(std::move(value)) {}
+  CopyCheckedKey(const CopyCheckedKey &other) : text(other.text) {
+    if (budget == 0)
+      throw std::runtime_error("key copy failed");
+    if (budget > 0)
+      --budget;
+    ++copies;
+  }
+  CopyCheckedKey(CopyCheckedKey &&) = default;
+  bool operator==(const CopyCheckedKey &) const = default;
+};
+struct CopyCheckedHash {
+  std::size_t operator()(const CopyCheckedKey &key) const {
+    return std::hash<std::string>{}(key.text);
+  }
+};
+void copy_and_aliasing_regressions() {
+  using Map = ElasticHashTable<CopyCheckedKey, int, CopyCheckedHash>;
+  Map table;
+  table.reserve(100);
+  Map::value_type entry(CopyCheckedKey("a long key that allocates a string"),
+                        7);
+  CopyCheckedKey::copies = 0;
+  auto inserted = table.insert(std::move(entry));
+  CHECK(inserted.second && inserted.first->second == 7);
+  CHECK(CopyCheckedKey::copies <= 1); // No redundant const-key allocation.
+  const auto buckets = table.bucket_count();
+  auto duplicate = table.insert(std::move(*inserted.first));
+  CHECK(!duplicate.second && duplicate.first->second == 7);
+  CHECK(table.size() == 1 && table.bucket_count() == buckets);
+  table.insert({CopyCheckedKey("another long key with an owned string"), 8});
+  table.insert({CopyCheckedKey("a third long key with an owned string"), 9});
+  CopyCheckedKey::copies = 0;
+  table.rehash(2 * buckets);
+  CHECK(CopyCheckedKey::copies <= static_cast<int>(table.size()));
+  const auto before_failure = table.bucket_count();
+  CopyCheckedKey::budget = 1; // Fail after the replacement has one live entry.
+  bool threw = false;
+  try {
+    table.rehash(2 * before_failure);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  CopyCheckedKey::budget = -1;
+  CHECK(threw && table.bucket_count() == before_failure && table.size() == 3);
+  CHECK(table.find(CopyCheckedKey("a long key that allocates a string"))
+            ->second == 7);
+  CHECK(table.find(CopyCheckedKey("another long key with an owned string"))
+            ->second == 8);
+  CHECK(table.find(CopyCheckedKey("a third long key with an owned string"))
+            ->second == 9);
+
+  ElasticHashTable<int, std::string> alias(1);
+  alias.insert({1, "mapped value used across growth"});
+  alias.insert({2, "second value"});
+  auto placed = alias.try_emplace(3, alias.find(1)->second);
+  CHECK(placed.second &&
+        placed.first->second == "mapped value used across growth");
+}
+
 void scheduler_regressions() {
   // Check the C++ allowance against the formally counted recurrence.
   std::size_t work[13] = {1, 3};
@@ -118,6 +183,7 @@ void scheduler_regressions() {
 
 int main() {
   scheduler_regressions();
+  copy_and_aliasing_regressions();
   Table table;
   for (int i = 0; i < 20; ++i)
     table.insert({i, i});

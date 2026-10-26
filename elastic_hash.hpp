@@ -178,10 +178,10 @@ public:
     const auto found = find_index(value.first, hash);
     if (found != npos)
       return {iterator(this, found), false};
-    // Stage before a possible rebuild, including when value aliases this table.
-    value_type staged(std::move(value));
+    // A value aliasing a live table entry was already found above. An absent
+    // entry can be forwarded directly, avoiding another copy of its const key.
     prepare_insert();
-    return {iterator(this, insert_absent(std::move(staged), hash)), true};
+    return {iterator(this, insert_absent(std::move(value), hash)), true};
   }
   template <class... Args> std::pair<iterator, bool> insert(Args &&...args) {
     return insert(value_type(std::forward<Args>(args)...));
@@ -394,7 +394,8 @@ private:
       rehash(std::max(data_.size() + 1, buckets_for(size_ + 1, load_factor_)));
     }
   }
-  std::size_t insert_absent(value_type &&value, std::size_t hash) {
+  template <class V>
+  std::size_t insert_absent(V &&value, std::size_t hash) {
     auto into = [&](std::size_t i, std::size_t limit = npos) {
       auto &level = levels_[i];
       limit = std::min(limit, 2 * level.capacity);
@@ -402,7 +403,7 @@ private:
         const auto bucket = probe_bucket(i, j, hash);
         if (tags_[bucket] >= 2)
           continue;
-        data_[bucket].emplace(std::move(value));
+        data_[bucket].emplace(std::forward<V>(value));
         if (tags_[bucket] == 0) {
           ++level.used;
           ++used_;
@@ -458,8 +459,7 @@ private:
         continue;
       const auto hash = replacement.hash_(bucket->first);
       if constexpr (std::is_copy_constructible_v<value_type>) {
-        value_type value(*bucket);
-        replacement.insert_absent(std::move(value), hash);
+        replacement.insert_absent(*bucket, hash);
       } else {
         replacement.insert_absent(std::move(*bucket), hash);
       }
