@@ -425,7 +425,7 @@ private:
 
   constexpr uint64_t rapid_hash(uint64_t x, uint64_t y,
                                 uint64_t z) const noexcept {
-    static constexpr uint64_t secret[8] = {
+    constexpr uint64_t secret[8] = {
         0x2d358dccaa6c78a5ull, 0x8bb84b93962eacc9ull, 0x4b33a62ed433d4a3ull,
         0x4d5a2da51de1aa47ull, 0xa0761d6478bd642full, 0xe7037ed1a0b428dbull,
         0x90ed1765281c388cull, 0xaaaaaaaaaaaaaaaaull};
